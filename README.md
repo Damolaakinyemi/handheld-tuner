@@ -12,6 +12,18 @@ python3 -m tuner profiles
 python3 -m unittest discover -s tests -t .
 ```
 
+## Get it onto the Legion Go
+
+1. Install [Python 3.9 or newer](https://www.python.org/downloads/) (tick "Add python.exe to PATH") and
+   [Git](https://git-scm.com/download/win).
+2. In a terminal: `git clone https://github.com/Damolaakinyemi/handheld-tuner.git`. The repo is private, so Git
+   asks you to sign in to GitHub in a browser the first time. No Git? Use the green **Code** button, then
+   **Download ZIP**, and unzip it.
+3. Update later with `git pull` inside the folder.
+
+There is nothing to `pip install`. The tuner and overlay use only Python's standard library (the overlay
+needs Tk, which the python.org installer includes).
+
 ## Run it on the Legion Go (Windows 11, elevated prompt)
 
 Needs [PresentMon](https://github.com/GameTechDev/PresentMon) (2.x console build) and
