@@ -76,7 +76,8 @@ for dry-run sessions (they never change anything).
   "notes": ["saved profile for eldenring.exe"],
   "session_seconds": 412,
   "device": {"name": "Lenovo Legion Go", "tdp_min_w": 8, "tdp_max_w": 30, "tdp_step_w": 2,
-             "resolutions": ["1280x800", "1600x1000", "1920x1200", "2560x1600"], "battery_wh": 49.2}
+             "resolutions": ["1280x800", "1600x1000", "1920x1200", "2560x1600"], "battery_wh": 49.2,
+             "base_power_w": 4.0}   // screen and other draw on top of APU power
 }
 ```
 

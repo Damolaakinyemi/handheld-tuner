@@ -58,6 +58,31 @@ It only listens on loopback, needs a per-run bearer token (`~/.handheld-tuner/to
 and takes JSON only, because it can change TDP and resolution. Stopping a session, or the service, puts the
 original settings back. Profiles are saved automatically when a session converges.
 
+## The overlay
+
+`overlay/` is a small always-on-top window that reads the service's event stream. It is a separate program:
+it only talks to the service over the API (see [docs/API.md](docs/API.md)), so it can crash or restart without
+touching your game or your settings.
+
+```
+python -m tuner serve --simulate     # or the real service
+python -m overlay                    # pill in the top-left corner
+python -m overlay --corner top-right --scale 1.2 --quiet
+```
+
+- **Pill**: status dot, fps and power. A line under it announces each change for about 2.5 s, e.g.
+  "Below target. Lowering resolution". Dim when offline or idle, `--quiet` hides it then.
+- **Panel**: fps, power, temperature, estimated battery left, the current TDP and resolution (a chip turns blue
+  for 3 s after the tuner changes it), a power graph, the last decision, and your goal.
+- **Open and close the panel** by holding **L3+R3** for half a second (or Ctrl+Alt+O). It reads the controller
+  without consuming input. On Windows the window is click-through, so it cannot be clicked.
+- It reconnects by itself, including after a service restart, which issues a new token.
+
+**Not yet tested on Windows or the Legion Go.** Everything that draws and decides (the model, the event reader,
+the Tk drawing) runs and is tested off Windows. Click-through, staying above the game, DPI scaling and the XInput
+chord are Windows-only code that has never run, so expect to adjust them. Like any overlay it only shows over
+borderless or windowed games, not exclusive fullscreen.
+
 ## How the controller decides
 
 Every 12 s window it compares frame rate, GPU headroom, power and temperature with the goal, then makes

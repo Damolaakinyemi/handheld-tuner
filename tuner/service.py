@@ -258,6 +258,7 @@ class TunerService:
                     "tdp_step_w": self.device.tdp_step_w,
                     "resolutions": [f"{w}x{h}" for w, h in self.device.resolutions],
                     "battery_wh": self.device.battery_wh,
+                    "base_power_w": self.device.base_power_w,
                 },
             }
 
