@@ -13,7 +13,8 @@ from .model import LEGION_GO, Goal
 from .profiles import ProfileStore
 from .restore import RestoreStore
 from .runner import run
-from .sim import SimGame
+from .service import DEFAULT_TOKEN_PATH, TunerServer, TunerService
+from .sim import PacedBackend, SimGame
 
 LOG_DIR = Path.home() / ".handheld-tuner" / "logs"
 
@@ -170,6 +171,115 @@ def cmd_restore(args) -> int:
     return 0
 
 
+def _backend_factory(args, device):
+    if args.simulate:
+        def make_sim(game, dry_run):
+            sim = SimGame(device, Controller.default_settings(Goal(), device), seed=args.seed)
+            return PacedBackend(sim, args.tick)
+        return make_sim
+
+    def make_windows(game, dry_run):
+        from .windows import WindowsBackend
+
+        return WindowsBackend(device, game, args.presentmon, args.ryzenadj, read_only=dry_run)
+
+    return make_windows
+
+
+def cmd_serve(args) -> int:
+    device = LEGION_GO
+    service = TunerService(device, _backend_factory(args, device), ProfileStore(args.profiles))
+    try:
+        server = TunerServer(service, args.host, args.port, args.token_file)
+    except (OSError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    mode = "simulated game" if args.simulate else "Windows hardware"
+    print(f"tuner service on http://{args.host}:{server.port} ({mode})")
+    print(f"API token is in {server.token_path}; see docs/API.md")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nshutting down")
+    finally:
+        service.stop_session()  # restores the original TDP and resolution
+        server.close()
+    return 0
+
+
+def _api(args, method: str, path: str, body=None, stream: bool = False):
+    import json
+    import urllib.error
+    import urllib.request
+
+    try:
+        token = Path(args.token_file).read_text().strip()
+    except OSError:
+        print(f"error: no token at {args.token_file}; is `tuner serve` running?", file=sys.stderr)
+        raise SystemExit(1)
+    data = json.dumps(body if body is not None else {}).encode() if method == "POST" else None
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{args.port}{path}", data=data, method=method,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=None if stream else 30)
+    except urllib.error.HTTPError as e:
+        detail = json.loads(e.read() or b"{}").get("error", e.reason)
+        print(f"error {e.code}: {detail}", file=sys.stderr)
+        raise SystemExit(1)
+    except urllib.error.URLError as e:
+        print(f"error: cannot reach the service on port {args.port}: {e.reason}", file=sys.stderr)
+        raise SystemExit(1)
+    return resp if stream else json.loads(resp.read())
+
+
+def _goal_body(args) -> dict:
+    body = {}
+    for key, value in (("fps", args.fps), ("hours", args.hours), ("prefer", args.prefer), ("max_temp", args.max_temp)):
+        if value is not None:
+            body[key] = value
+    return body
+
+
+def cmd_ctl(args) -> int:
+    import json
+
+    action = args.action
+    if action == "start":
+        body = {"game": args.game, "dry_run": args.dry_run, **_goal_body(args)}
+        out = _api(args, "POST", "/v1/session", body)
+    elif action == "goal":
+        out = _api(args, "POST", "/v1/goal", _goal_body(args))
+    elif action in ("pause", "resume", "shutdown"):
+        out = _api(args, "POST", f"/v1/{action}")
+    elif action == "stop":
+        out = _api(args, "DELETE", "/v1/session")
+    elif action == "watch":
+        resp = _api(args, "GET", "/v1/events", stream=True)
+        try:
+            for raw in resp:
+                line = raw.decode().strip()
+                if not line.startswith("data:"):
+                    continue
+                e = json.loads(line[5:])
+                if e["type"] == "sample":
+                    s = e["settings"]
+                    print(f"{e['fps']:5.1f} fps  {e['power_w']:5.1f} W  {e['temp_c']:3.0f} C  {s['tdp_w']:>2} W {s['resolution']}")
+                elif e["type"] == "decision" and e["changed"]:
+                    print(f"  -> {e['settings']['tdp_w']} W {e['settings']['resolution']}: {e['reason']}"
+                          + ("" if e["applied"] else "  (not applied)"))
+                elif e["type"] == "note":
+                    print(f"  note: {e['message']}")
+        except KeyboardInterrupt:
+            pass
+        return 0
+    else:
+        out = _api(args, "GET", "/v1/status")
+    print(json.dumps(out, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tuner", description="Goal-based game tuner for handhelds")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -213,6 +323,29 @@ def build_parser() -> argparse.ArgumentParser:
     restore = sub.add_parser("restore", help="put back the original TDP and resolution after a crashed run")
     restore.add_argument("--ryzenadj", default="ryzenadj.exe")
     restore.set_defaults(func=cmd_restore)
+
+    serve = sub.add_parser("serve", help="run the background service with a local HTTP API")
+    add_tool_args(serve)
+    serve.add_argument("--host", default="127.0.0.1", help="loopback addresses only")
+    serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument("--token-file", default=str(DEFAULT_TOKEN_PATH))
+    serve.add_argument("--profiles", default=None)
+    serve.add_argument("--simulate", action="store_true", help="use a simulated game instead of hardware")
+    serve.add_argument("--tick", type=float, default=1.0, help="seconds per simulated sample")
+    serve.add_argument("--seed", type=int, default=1)
+    serve.set_defaults(func=cmd_serve)
+
+    ctl = sub.add_parser("ctl", help="control a running service")
+    ctl.add_argument("action", choices=("status", "start", "goal", "pause", "resume", "stop", "watch", "shutdown"))
+    ctl.add_argument("--port", type=int, default=8765)
+    ctl.add_argument("--token-file", default=str(DEFAULT_TOKEN_PATH))
+    ctl.add_argument("--game", help="start: exe name, e.g. eldenring.exe")
+    ctl.add_argument("--fps", type=int, default=None)
+    ctl.add_argument("--hours", type=float, default=None)
+    ctl.add_argument("--max-temp", dest="max_temp", type=float, default=None)
+    ctl.add_argument("--prefer", choices=("quality", "battery"), default=None)
+    ctl.add_argument("--dry-run", action="store_true")
+    ctl.set_defaults(func=cmd_ctl)
 
     prof = sub.add_parser("profiles", help="list saved profiles")
     prof.add_argument("--profiles", default=None)

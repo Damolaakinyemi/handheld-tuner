@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import time
 from dataclasses import replace
 from typing import Sequence, Tuple
 
@@ -82,3 +83,21 @@ class SimGame:
             temp_c=self.temp_c,
             battery_wh=self.battery_wh,
         )
+
+
+class PacedBackend:
+    """Makes a simulated backend behave like hardware: one sample per `interval` seconds."""
+
+    def __init__(self, inner, interval: float = 1.0) -> None:
+        self.inner = inner
+        self.interval = interval
+
+    def sample(self) -> Sample:
+        time.sleep(self.interval)
+        return self.inner.sample()
+
+    def apply(self, settings: Settings) -> Settings:
+        return self.inner.apply(settings)
+
+    def close(self) -> None:
+        pass

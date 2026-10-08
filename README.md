@@ -42,6 +42,22 @@ puts them back (TDP also resets on sleep or reboot, and the resolution change is
 against the PresentMon and RyzenAdj docs, and only its parsing and decision logic are unit-tested.
 Expect to fix things on first run.
 
+## Run it as a background service
+
+`serve` runs the tuner as a service with a local HTTP API, so an overlay, tray app, or anything else can drive
+it. Full reference in [docs/API.md](docs/API.md).
+
+```
+python -m tuner serve --simulate                  # fake game, runs anywhere; build frontends against this
+python -m tuner serve --presentmon ... --ryzenadj ...   # real hardware (Windows, admin)
+python -m tuner ctl start --game eldenring.exe --fps 60 --hours 2.5   # or --dry-run
+python -m tuner ctl watch | status | goal --fps 40 | pause | resume | stop | shutdown
+```
+
+It only listens on loopback, needs a per-run bearer token (`~/.handheld-tuner/token`), checks the Host header,
+and takes JSON only, because it can change TDP and resolution. Stopping a session, or the service, puts the
+original settings back. Profiles are saved automatically when a session converges.
+
 ## How the controller decides
 
 Every 12 s window it compares frame rate, GPU headroom, power and temperature with the goal, then makes
