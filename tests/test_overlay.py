@@ -118,15 +118,19 @@ class ToastTests(unittest.TestCase):
             (Goal(60, None, 60.0, "quality"), ((300, 1.0),), {}),   # runs hot
             (Goal(240, None, 85.0, "quality"), ((300, 1.0),), {}),  # unreachable
             (Goal(60, None, 85.0, "quality"), ((300, 1.6),), {"reject_res": {0, 1}}),  # refused changes
+            (Goal(60, None, 85.0, "quality"), ((300, 1.0),), {"blackouts": [(0, 60)]}),  # no frames
+            (Goal(60, None, 85.0, "quality"), ((300, 3.0),), {"hide_temp": True}),  # blind to heat
         ]
         for goal, scenes, faults in runs:
             c = Controller(goal, dev)
             result = run(c, SimGame(dev, c.settings, scenes=scenes, **faults), 400)
             reasons |= {d.reason for _, d in result.decisions}
-        self.assertGreater(len(reasons), 6)
+        self.assertGreater(len(reasons), 8)
         for reason in sorted(reasons):
             self.assertNotEqual(friendly(reason), reason, f"no friendly wording for: {reason}")
             self.assertNotEqual(friendly("would change: " + reason), "would change: " + reason)
+        self.assertIn("waiting for frames from the game", reasons)
+        self.assertIn("temperature unreadable, not raising power", reasons)
 
 
 class PanelTests(unittest.TestCase):

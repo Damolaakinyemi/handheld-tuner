@@ -23,6 +23,8 @@ _FRIENDLY = [
     (r"over .*budget", "Over your battery budget. Trimming power"),
     (r"trimming power", "Spare headroom. Trimming power"),
     (r"unreachable", "Can't reach the target. Doing its best"),
+    (r"waiting for frames", "Waiting for the game…"),
+    (r"temperature unreadable", "Can't read the temperature. Keeping power steady"),
     (r"on target", "On target"),
 ]
 

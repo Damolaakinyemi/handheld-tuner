@@ -45,14 +45,23 @@ python -m tuner run --dry-run --game eldenring.exe --fps 60 --hours 2.5 --presen
 
 **3. Live.** Same command without `--dry-run`.
 
-**Safety.** Every TDP and resolution change is verified by reading it back. If one is refused, the tuner stops
-asking for it and works around it. The original TDP limits and resolution are saved on start and restored on
-exit, on Ctrl+C, and when the console window is closed. If the machine dies mid-run, `python -m tuner restore`
-puts them back (TDP also resets on sleep or reboot, and the resolution change is never written to the registry).
+**Safety.** Before it changes anything, live mode checks that this is an admin terminal, that both tools exist,
+and that it can read the TDP limit, the APU power and the core temperature. If any is missing it refuses to run
+(`--dry-run` still works, so you can look). Then:
 
-**The Windows backend ([tuner/windows.py](tuner/windows.py)) has never run on real hardware.** It was written
-against the PresentMon and RyzenAdj docs, and only its parsing and decision logic are unit-tested.
-Expect to fix things on first run.
+- The original TDP limits and resolution are saved first, and restored on exit, Ctrl+C, and when the console
+  window is closed. If the machine dies mid-run, `python -m tuner restore` puts them back.
+- Every TDP and resolution change is read back and verified. If one is refused or silently ignored, the tuner
+  stops asking for it and works around it.
+- No frames from the game (a loading screen, or a wrong exe name) means it waits. It never reads silence as a
+  slow game and raises power. Heat is still watched while it waits.
+- If the temperature cannot be read, it never raises power.
+- The short-boost limit equals the TDP by default (no boost). `--boost-ratio 1.2` allows up to 1.3x.
+- TDP changes are runtime only. A reboot, and sleeping, resets them. The resolution change is not saved to the
+  registry either.
+
+**The Windows backend ([tuner/windows.py](tuner/windows.py)) has never run on real hardware.** Expect to fix
+things on first run. See "What has been verified" below for exactly what that means.
 
 ## Run it as a background service
 
@@ -94,6 +103,25 @@ python -m overlay --corner top-right --scale 1.2 --quiet
 the Tk drawing) runs and is tested off Windows. Click-through, staying above the game, DPI scaling and the XInput
 chord are Windows-only code that has never run, so expect to adjust them. Like any overlay it only shows over
 borderless or windowed games, not exclusive fullscreen.
+
+## What has been verified, and what has not
+
+Run the tests with `python3 -m unittest discover -s tests -t .` (163 tests, standard library only).
+
+| Verified on a Mac | How |
+| --- | --- |
+| Decision logic, including no-frames and unreadable-temperature guards | simulator, with the guards confirmed to fail against the old controller |
+| The whole Windows backend: pre-flight, verified changes, retries, restore-on-exit, crash recovery | the real `WindowsBackend` against a simulated machine whose power, heat, frames, display and battery respond to what is set |
+| Windows control flow: display switching, battery, admin check, click-through, controller chord | the real functions run against a faked Win32 API |
+| Win32 struct layouts (display mode, battery, XInput) | sizes and offsets checked against the SDK numbers |
+| Service API and its security checks, event stream, overlay logic and drawing | real HTTP against a simulated game; overlay drawing exported to SVG |
+
+| Not verified until it runs on the Legion Go |
+| --- |
+| That the real Win32, RyzenAdj and PresentMon behave the way the fakes assume (flag names, output format, firmware behaviour) |
+| That the overlay shows over a game, is click-through, and reads the L3+R3 chord |
+| That the controller's thresholds suit real games (they come from a simulator) |
+| Anything about anti-cheat, other devices, or other firmware versions |
 
 ## How the controller decides
 

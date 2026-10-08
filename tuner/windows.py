@@ -11,6 +11,8 @@ verified, and the original TDP and resolution are put back on exit.
 from __future__ import annotations
 
 import atexit
+import ctypes
+import shutil
 import signal
 import subprocess
 import sys
@@ -101,25 +103,42 @@ def _require_windows() -> None:
 
 
 def is_admin() -> bool:
-    import ctypes
-
     _require_windows()
     return bool(ctypes.windll.shell32.IsUserAnAdmin())
 
 
+# Win32 structs use explicit-size types, never wintypes or c_wchar, whose sizes differ by platform.
+# That keeps the layout identical everywhere, so tests can check it without a Windows machine.
+class SystemPowerStatus(ctypes.Structure):  # SYSTEM_POWER_STATUS, 12 bytes
+    _fields_ = [("ACLineStatus", ctypes.c_uint8), ("BatteryFlag", ctypes.c_uint8),
+                ("BatteryLifePercent", ctypes.c_uint8), ("SystemStatusFlag", ctypes.c_uint8),
+                ("BatteryLifeTime", ctypes.c_uint32), ("BatteryFullLifeTime", ctypes.c_uint32)]
+
+
+class DEVMODEW(ctypes.Structure):  # display flavour of DEVMODEW, 220 bytes
+    _fields_ = [
+        ("dmDeviceName", ctypes.c_uint16 * 32), ("dmSpecVersion", ctypes.c_uint16),
+        ("dmDriverVersion", ctypes.c_uint16), ("dmSize", ctypes.c_uint16),
+        ("dmDriverExtra", ctypes.c_uint16), ("dmFields", ctypes.c_uint32),
+        ("dmPositionX", ctypes.c_int32), ("dmPositionY", ctypes.c_int32),
+        ("dmDisplayOrientation", ctypes.c_uint32), ("dmDisplayFixedOutput", ctypes.c_uint32),
+        ("dmColor", ctypes.c_int16), ("dmDuplex", ctypes.c_int16),
+        ("dmYResolution", ctypes.c_int16), ("dmTTOption", ctypes.c_int16),
+        ("dmCollate", ctypes.c_int16), ("dmFormName", ctypes.c_uint16 * 32),
+        ("dmLogPixels", ctypes.c_uint16), ("dmBitsPerPel", ctypes.c_uint32),
+        ("dmPelsWidth", ctypes.c_uint32), ("dmPelsHeight", ctypes.c_uint32),
+        ("dmDisplayFlags", ctypes.c_uint32), ("dmDisplayFrequency", ctypes.c_uint32),
+        ("dmICMMethod", ctypes.c_uint32), ("dmICMIntent", ctypes.c_uint32),
+        ("dmMediaType", ctypes.c_uint32), ("dmDitherType", ctypes.c_uint32),
+        ("dmReserved1", ctypes.c_uint32), ("dmReserved2", ctypes.c_uint32),
+        ("dmPanningWidth", ctypes.c_uint32), ("dmPanningHeight", ctypes.c_uint32),
+    ]
+
+
 def battery_status() -> Tuple[Optional[int], Optional[bool]]:
     """(percent or None if unknown, on AC power or None if unknown)."""
-    import ctypes
-    from ctypes import wintypes
-
     _require_windows()
-
-    class Status(ctypes.Structure):
-        _fields_ = [("ACLineStatus", wintypes.BYTE), ("BatteryFlag", wintypes.BYTE),
-                    ("BatteryLifePercent", wintypes.BYTE), ("SystemStatusFlag", wintypes.BYTE),
-                    ("BatteryLifeTime", wintypes.DWORD), ("BatteryFullLifeTime", wintypes.DWORD)]
-
-    st = Status()
+    st = SystemPowerStatus()
     if not ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(st)):
         return None, None
     pct = None if st.BatteryLifePercent == 255 else int(st.BatteryLifePercent)
@@ -127,37 +146,13 @@ def battery_status() -> Tuple[Optional[int], Optional[bool]]:
     return pct, ac
 
 
-def _devmode():
-    import ctypes
-    from ctypes import wintypes
-
-    class DEVMODEW(ctypes.Structure):
-        _fields_ = [
-            ("dmDeviceName", ctypes.c_wchar * 32), ("dmSpecVersion", wintypes.WORD),
-            ("dmDriverVersion", wintypes.WORD), ("dmSize", wintypes.WORD),
-            ("dmDriverExtra", wintypes.WORD), ("dmFields", wintypes.DWORD),
-            ("dmPositionX", ctypes.c_long), ("dmPositionY", ctypes.c_long),
-            ("dmDisplayOrientation", wintypes.DWORD), ("dmDisplayFixedOutput", wintypes.DWORD),
-            ("dmColor", ctypes.c_short), ("dmDuplex", ctypes.c_short),
-            ("dmYResolution", ctypes.c_short), ("dmTTOption", ctypes.c_short),
-            ("dmCollate", ctypes.c_short), ("dmFormName", ctypes.c_wchar * 32),
-            ("dmLogPixels", wintypes.WORD), ("dmBitsPerPel", wintypes.DWORD),
-            ("dmPelsWidth", wintypes.DWORD), ("dmPelsHeight", wintypes.DWORD),
-            ("dmDisplayFlags", wintypes.DWORD), ("dmDisplayFrequency", wintypes.DWORD),
-            ("dmICMMethod", wintypes.DWORD), ("dmICMIntent", wintypes.DWORD),
-            ("dmMediaType", wintypes.DWORD), ("dmDitherType", wintypes.DWORD),
-            ("dmReserved1", wintypes.DWORD), ("dmReserved2", wintypes.DWORD),
-            ("dmPanningWidth", wintypes.DWORD), ("dmPanningHeight", wintypes.DWORD),
-        ]
-
+def _devmode() -> DEVMODEW:
     dm = DEVMODEW()
     dm.dmSize = ctypes.sizeof(DEVMODEW)
     return dm
 
 
 def current_mode() -> Optional[Tuple[int, int]]:
-    import ctypes
-
     _require_windows()
     dm = _devmode()
     if not ctypes.windll.user32.EnumDisplaySettingsW(None, -1, ctypes.byref(dm)):  # ENUM_CURRENT_SETTINGS
@@ -166,8 +161,6 @@ def current_mode() -> Optional[Tuple[int, int]]:
 
 
 def current_refresh_hz() -> Optional[int]:
-    import ctypes
-
     _require_windows()
     dm = _devmode()
     if not ctypes.windll.user32.EnumDisplaySettingsW(None, -1, ctypes.byref(dm)):
@@ -177,8 +170,6 @@ def current_refresh_hz() -> Optional[int]:
 
 def list_modes() -> List[Tuple[int, int, int]]:
     """Every (width, height, refresh Hz) the primary display reports, deduplicated."""
-    import ctypes
-
     _require_windows()
     seen = set()
     i = 0
@@ -193,8 +184,6 @@ def list_modes() -> List[Tuple[int, int, int]]:
 
 def set_resolution(width: int, height: int) -> bool:
     """Switch the desktop resolution, then confirm it by reading it back."""
-    import ctypes
-
     _require_windows()
     if current_mode() == (width, height):
         return True
@@ -212,18 +201,16 @@ def set_resolution(width: int, height: int) -> bool:
     return False
 
 
-def restore_state(ryzenadj: str, state: RestoreState) -> List[str]:
+def restore_state(ryzenadj: str, state: RestoreState, system: Optional["System"] = None) -> List[str]:
     """Puts the saved TDP limits and resolution back. Returns problems, empty on success."""
+    system = system or System()
     problems = []
     args = ryzenadj_limit_args(state.stapm_mw, state.fast_mw, state.slow_mw)
     if args:
-        try:
-            r = subprocess.run([ryzenadj] + args, capture_output=True, timeout=10)
-            if r.returncode != 0:
-                problems.append("ryzenadj refused to restore the TDP limits")
-        except (OSError, subprocess.TimeoutExpired):
-            problems.append("could not run ryzenadj to restore the TDP limits")
-    if state.width and state.height and not set_resolution(state.width, state.height):
+        code, _ = system.run([ryzenadj] + args)
+        if code != 0:
+            problems.append("could not restore the TDP limits with ryzenadj")
+    if state.width and state.height and not system.set_resolution(state.width, state.height):
         problems.append(f"could not restore {state.width}x{state.height}")
     return problems
 
@@ -244,8 +231,6 @@ def _install_exit_hooks(cleanup) -> None:
             except (ValueError, OSError):
                 pass  # not the main thread
 
-    import ctypes
-
     handler_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
 
     def on_console_event(event):
@@ -254,13 +239,93 @@ def _install_exit_hooks(cleanup) -> None:
         return 0
 
     _install_exit_hooks._keepalive = handler_type(on_console_event)  # must outlive this call
-    ctypes.windll.kernel32.SetConsoleCtrlHandler(_install_exit_hooks._keepalive, True)
+    set_handler = ctypes.windll.kernel32.SetConsoleCtrlHandler
+    set_handler.argtypes = [handler_type, ctypes.c_int]
+    set_handler.restype = ctypes.c_int
+    set_handler(_install_exit_hooks._keepalive, 1)
+
+
+# -- pre-flight checks (pure, unit-tested) -----------------------------------
+
+def startup_problems(ryzenadj: str, presentmon: str, system: "System") -> List[str]:
+    """Things that must be true before the backend touches anything."""
+    problems = []
+    if not system.is_admin():
+        problems.append("this terminal is not elevated; open it with Run as administrator, because "
+                        "RyzenAdj cannot reach the power controller otherwise")
+    if not system.which(ryzenadj):
+        problems.append(f"cannot find RyzenAdj at {ryzenadj!r}; pass --ryzenadj with the full path to ryzenadj.exe")
+    if not system.which(presentmon):
+        problems.append(f"cannot find PresentMon at {presentmon!r}; pass --presentmon with the full path "
+                        "to the PresentMon 2.x console exe")
+    return problems
+
+
+def telemetry_problems(info: Dict[str, float]) -> List[str]:
+    """Readings live tuning cannot do without: it must see what it changes, and see heat."""
+    problems = []
+    if "STAPM LIMIT" not in info:
+        problems.append("cannot read the current TDP limit (no STAPM LIMIT row), so changes could not be "
+                        "verified or undone")
+    if not any(k in info for k in ("STAPM VALUE", "PPT VALUE SLOW")):
+        problems.append("cannot read the APU power draw (no STAPM VALUE row)")
+    if info.get("THM VALUE CORE", 0.0) <= 0:
+        problems.append("cannot read the core temperature (no THM VALUE CORE row), so the heat limit "
+                        "would not work")
+    return problems
+
+
+# -- the OS seam -------------------------------------------------------------
+
+class System:
+    """Everything the backend asks of the operating system, in one place so tests can fake it."""
+
+    def __init__(self) -> None:
+        _require_windows()
+
+    def which(self, name: str) -> Optional[str]:
+        return shutil.which(name)
+
+    def is_admin(self) -> bool:
+        return is_admin()
+
+    def run(self, cmd: List[str], timeout: float = 10) -> Tuple[int, str]:
+        """(exit code, combined output). A command that cannot run or hangs gives (-1, reason)."""
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return -1, str(e)
+        return r.returncode, (r.stdout or "") + (r.stderr or "")
+
+    def start_presentmon(self, cmd: List[str]):
+        return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+
+    def current_mode(self) -> Optional[Tuple[int, int]]:
+        return current_mode()
+
+    def set_resolution(self, width: int, height: int) -> bool:
+        return set_resolution(width, height)
+
+    def battery_percent(self) -> Optional[int]:
+        return battery_status()[0]
+
+    def monotonic(self) -> float:
+        return time.monotonic()
+
+    def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+    def install_exit_hooks(self, cleanup) -> None:
+        _install_exit_hooks(cleanup)
 
 
 # -- backend ---------------------------------------------------------------
 
 class WindowsBackend:
-    FAST_LIMIT_RATIO = 1.2  # short-boost limit relative to sustained TDP
+    """Telemetry and actuators for a Windows handheld. Live mode (read_only=False) refuses to
+    start unless it can read the TDP limit, power and temperature, saves the original TDP and
+    resolution first, verifies every change it makes, and puts everything back on exit."""
+
     TDP_TOLERANCE_W = 0.5
 
     def __init__(
@@ -272,40 +337,56 @@ class WindowsBackend:
         read_only: bool = False,
         restore_store: Optional[RestoreStore] = None,
         notify=print,
+        system: Optional[System] = None,
+        boost_ratio: float = 1.0,
     ) -> None:
-        _require_windows()
+        if not 1.0 <= boost_ratio <= 1.3:
+            raise ValueError("boost_ratio must be between 1.0 and 1.3")
+        self.sys = system or System()
+        problems = startup_problems(ryzenadj, presentmon, self.sys)
+        if problems:
+            raise RuntimeError("; ".join(problems))
+
         self.device = device
         self.ryzenadj = ryzenadj
         self.read_only = read_only
+        self.boost_ratio = boost_ratio  # short-boost limit as a multiple of the TDP; 1.0 means no boost
         self.notify = notify
         self.settings: Optional[Settings] = None
         self.extras: Dict[str, float] = {}
         self._last_info: Dict[str, float] = {}
         self._frames: Deque[Tuple[float, float]] = deque()  # (monotonic time, ms)
+        self._frame_col: Optional[int] = None
         self._lock = threading.Lock()
-        self._last_sample = time.monotonic()
+        self._last_sample = self.sys.monotonic()
+        self._last_pct: Optional[int] = None
         self._closed = False
 
         self._read_info()
         if not read_only:
+            blind = telemetry_problems(self._last_info)
+            if blind:
+                raise RuntimeError("live tuning needs working telemetry: " + "; ".join(blind)
+                                   + ". Run `check` and send me the report, or use --dry-run to watch "
+                                     "without changing anything.")
+
+        self._pm = self.sys.start_presentmon(
+            [presentmon, "--process_name", game, "--output_stdout",
+             "--stop_existing_session", "--terminate_on_proc_exit"])
+        threading.Thread(target=self._read_presentmon, daemon=True).start()
+
+        if not read_only:
             self._store = restore_store or RestoreStore()
             self._save_restore_point()
-            _install_exit_hooks(self.close)
-
-        self._pm = subprocess.Popen(
-            [presentmon, "--process_name", game, "--output_stdout",
-             "--stop_existing_session", "--terminate_on_proc_exit"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1,
-        )
-        threading.Thread(target=self._read_presentmon, daemon=True).start()
+            self.sys.install_exit_hooks(self.close)
 
     # -- Backend protocol
 
     def sample(self) -> Sample:
-        wait = 1.0 - (time.monotonic() - self._last_sample)
+        wait = 1.0 - (self.sys.monotonic() - self._last_sample)
         if wait > 0:
-            time.sleep(wait)
-        now = time.monotonic()
+            self.sys.sleep(wait)
+        now = self.sys.monotonic()
         with self._lock:
             while self._frames and self._frames[0][0] < now - 1.0:
                 self._frames.popleft()
@@ -314,15 +395,17 @@ class WindowsBackend:
 
         fps_avg, fps_low = fps_stats(recent)
         info = self._read_info()
-        pct, _ac = battery_status()
+        pct = self.sys.battery_percent()
+        if pct is not None:
+            self._last_pct = pct
         cap = self.settings.fps_cap if self.settings else 60
         return Sample(
             fps_avg=fps_avg,
             fps_low=fps_low,
             gpu_util=estimate_gpu_util(fps_avg, cap),
             apu_power_w=info.get("STAPM VALUE", info.get("PPT VALUE SLOW", 0.0)),
-            temp_c=info.get("THM VALUE CORE", 0.0),
-            battery_wh=self.device.battery_wh * (100 if pct is None else pct) / 100.0,
+            temp_c=info.get("THM VALUE CORE", 0.0),  # 0 means unreadable; the controller treats it so
+            battery_wh=self.device.battery_wh * (100 if self._last_pct is None else self._last_pct) / 100.0,
         )
 
     def apply(self, settings: Settings) -> Settings:
@@ -334,14 +417,29 @@ class WindowsBackend:
             raise RuntimeError("backend is read-only")
 
         prev = self.settings
-        tdp = prev.tdp_w if prev else self._effective_tdp(settings.tdp_w)
-        res = prev.res_index if prev else self._effective_res(settings.res_index)
+        if prev:
+            tdp = prev.tdp_w
+        else:
+            # compare with the exact limit, not the snapped one: 15 W is not 14 W, so it must be written
+            exact = self._read_info().get("STAPM LIMIT")
+            close = exact is not None and abs(exact - settings.tdp_w) <= self.TDP_TOLERANCE_W
+            tdp = settings.tdp_w if close else None
+        res = prev.res_index if prev else self._current_res_index()  # None if the display cannot be read
 
         if tdp != settings.tdp_w:
-            tdp = settings.tdp_w if self._set_tdp(settings.tdp_w) else self._effective_tdp(tdp)
+            if self._set_tdp(settings.tdp_w):
+                tdp = settings.tdp_w
+            else:
+                tdp = self._effective_tdp(prev.tdp_w if prev else settings.tdp_w)
         if res != settings.res_index:
             w, h = d.resolutions[settings.res_index]
-            res = settings.res_index if set_resolution(w, h) else self._effective_res(res)
+            if self.sys.set_resolution(w, h):
+                res = settings.res_index
+            else:
+                res = self._current_res_index()
+                if res is None:
+                    res = settings.res_index
+                    self.notify("could not read or change the display mode")
 
         self.settings = Settings(tdp, res, settings.fps_cap)
         return self.settings
@@ -349,7 +447,7 @@ class WindowsBackend:
     def current_settings(self) -> Optional[Settings]:
         """What the device is set to right now, for starting a dry run from reality."""
         info = self._read_info()
-        mode = current_mode()
+        mode = self.sys.current_mode()
         if "STAPM LIMIT" not in info or mode is None:
             return None
         res = self.device.resolution_index(*mode)
@@ -368,7 +466,7 @@ class WindowsBackend:
         if self.read_only:
             return
         state = self._store.load()
-        problems = restore_state(self.ryzenadj, state) if state else ["no restore point was saved"]
+        problems = restore_state(self.ryzenadj, state, self.sys) if state else ["no restore point was saved"]
         if problems:
             self.notify("could not fully restore your settings: " + "; ".join(problems)
                         + " (run `python -m tuner restore`, or reboot)")
@@ -383,34 +481,31 @@ class WindowsBackend:
                         "(run `python -m tuner restore` to put them back now)")
             return
         stapm, fast, slow = limits_to_mw(self._last_info)
-        mode = current_mode()
-        if stapm is None:
-            self.notify("could not read the current TDP limits, so they cannot be restored "
-                        "automatically (sleeping or rebooting resets them)")
+        mode = self.sys.current_mode()
         self._store.save(RestoreState(stapm, fast, slow, *(mode or (None, None))))
 
     def _read_presentmon(self) -> None:
-        col = None
         for line in self._pm.stdout:
-            if col is None:
-                col = frame_time_column(line)
-                continue
-            ms = parse_frame_ms(line, col)
-            if ms is not None:
-                with self._lock:
-                    self._frames.append((time.monotonic(), ms))
+            self._ingest(line)
+
+    def _ingest(self, line: str) -> None:
+        """One line of PresentMon CSV: the header first, then one frame per row."""
+        if self._frame_col is None:
+            self._frame_col = frame_time_column(line)
+            return
+        ms = parse_frame_ms(line, self._frame_col)
+        if ms is not None:
+            with self._lock:
+                self._frames.append((self.sys.monotonic(), ms))
 
     def _set_tdp(self, tdp_w: int) -> bool:
         mw = tdp_w * 1000
-        args = ryzenadj_limit_args(mw, int(mw * self.FAST_LIMIT_RATIO), mw)
+        args = ryzenadj_limit_args(mw, int(mw * self.boost_ratio), mw)
         for attempt in range(2):  # the power table can lag a moment behind the write
-            try:
-                r = subprocess.run([self.ryzenadj] + args, capture_output=True, timeout=10)
-            except (OSError, subprocess.TimeoutExpired):
+            code, _ = self.sys.run([self.ryzenadj] + args)
+            if code != 0:
                 return False
-            if r.returncode != 0:
-                return False
-            time.sleep(0.5 if attempt == 0 else 1.0)
+            self.sys.sleep(0.5 if attempt == 0 else 1.0)
             info = self._read_info()
             if "STAPM LIMIT" not in info or abs(info["STAPM LIMIT"] - tdp_w) <= self.TDP_TOLERANCE_W:
                 return True  # verified, or the limit cannot be read back so trust the exit code
@@ -420,17 +515,16 @@ class WindowsBackend:
         info = self._read_info()
         return self.device.snap_tdp(info["STAPM LIMIT"]) if "STAPM LIMIT" in info else fallback
 
-    def _effective_res(self, fallback: int) -> int:
-        mode = current_mode()
-        idx = self.device.resolution_index(*mode) if mode else None
-        return fallback if idx is None else idx
+    def _current_res_index(self) -> Optional[int]:
+        mode = self.sys.current_mode()
+        if mode is None:
+            return None
+        exact = self.device.resolution_index(*mode)
+        return exact if exact is not None else self.device.nearest_resolution_index(*mode)
 
     def _read_info(self) -> Dict[str, float]:
-        try:
-            out = subprocess.run([self.ryzenadj, "--info"], capture_output=True, text=True, timeout=3).stdout
-        except (OSError, subprocess.TimeoutExpired):
-            return self._last_info
-        info = parse_ryzenadj_info(out)
+        code, out = self.sys.run([self.ryzenadj, "--info"], timeout=3)
+        info = parse_ryzenadj_info(out) if code == 0 else {}
         if info:
             self._last_info = info
             self.extras = info

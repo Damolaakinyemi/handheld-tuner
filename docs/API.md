@@ -93,7 +93,7 @@ A `: keepalive` comment arrives every 15 s of silence. A client that falls behin
 | --- | --- | --- |
 | `state` | session starts, stops, pauses, errors, or its goal changes | the full snapshot |
 | `sample` | every second | `ts`, `t` (session seconds), `fps`, `fps_low`, `gpu_util` (0 to 1), `power_w`, `temp_c`, `battery_wh`, `settings` in effect |
-| `decision` | every 12 s window | `changed`, `applied`, `reason`, `settings` (proposed or in effect), `converged`, `stats` |
+| `decision` | every 12 s window (including `waiting for frames from the game` and `temperature unreadable, not raising power`) | `changed`, `applied`, `reason`, `settings` (proposed or in effect), `converged`, `stats` |
 | `note` | something worth telling the user | `message` |
 
 In a `decision`, `changed: true` with `applied: false` means the tuner wanted to change something but

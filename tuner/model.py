@@ -25,6 +25,11 @@ class Device:
         except ValueError:
             return None
 
+    def nearest_resolution_index(self, width: int, height: int) -> int:
+        """The known resolution closest in pixel count, for a display mode that is not one of ours."""
+        target = width * height
+        return min(range(len(self.resolutions)), key=lambda i: abs(self.pixels(i) - target))
+
     def snap_tdp(self, watts: float) -> int:
         """Nearest TDP on this device's grid, clamped to its limits. Ties go to the lower value."""
         steps = math.floor((watts - self.tdp_min_w) / self.tdp_step_w + 0.5 - 1e-9)

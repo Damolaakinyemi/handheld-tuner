@@ -19,6 +19,13 @@ from .sim import PacedBackend, SimGame
 LOG_DIR = Path.home() / ".handheld-tuner" / "logs"
 
 
+def _boost_ratio(text: str) -> float:
+    value = float(text)
+    if not 1.0 <= value <= 1.3:
+        raise argparse.ArgumentTypeError("must be between 1.0 (no boost) and 1.3")
+    return value
+
+
 def _goal(args) -> Goal:
     return Goal(
         target_fps=args.fps,
@@ -107,7 +114,8 @@ def cmd_run(args) -> int:
     goal = _goal(args)
     store = ProfileStore(args.profiles)
     try:
-        backend = WindowsBackend(device, args.game, args.presentmon, args.ryzenadj, read_only=args.dry_run)
+        backend = WindowsBackend(device, args.game, args.presentmon, args.ryzenadj, read_only=args.dry_run,
+                                 boost_ratio=args.boost_ratio)
     except RuntimeError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -181,13 +189,25 @@ def _backend_factory(args, device):
     def make_windows(game, dry_run):
         from .windows import WindowsBackend
 
-        return WindowsBackend(device, game, args.presentmon, args.ryzenadj, read_only=dry_run)
+        return WindowsBackend(device, game, args.presentmon, args.ryzenadj, read_only=dry_run,
+                              boost_ratio=args.boost_ratio)
 
     return make_windows
 
 
 def cmd_serve(args) -> int:
     device = LEGION_GO
+    if not args.simulate:
+        from .windows import System, startup_problems
+
+        try:
+            problems = startup_problems(args.ryzenadj, args.presentmon, System())
+        except RuntimeError as e:
+            problems = [str(e)]
+        if problems:
+            for problem in problems:
+                print(f"error: {problem}", file=sys.stderr)
+            return 1
     service = TunerService(device, _backend_factory(args, device), ProfileStore(args.profiles))
     try:
         server = TunerServer(service, args.host, args.port, args.token_file)
@@ -296,6 +316,11 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--presentmon", default="PresentMon.exe")
         sp.add_argument("--ryzenadj", default="ryzenadj.exe")
 
+    def add_hw_args(sp):
+        add_tool_args(sp)
+        sp.add_argument("--boost-ratio", type=_boost_ratio, default=1.0,
+                        help="short-boost power limit as a multiple of the TDP; 1.0 (default) means no boost")
+
     sim = sub.add_parser("simulate", help="run the controller against a simulated game")
     add_goal_args(sim)
     sim.add_argument("--seconds", type=int, default=420)
@@ -305,7 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     live = sub.add_parser("run", help="tune a running game on Windows")
     add_goal_args(live)
-    add_tool_args(live)
+    add_hw_args(live)
     live.add_argument("--game", required=True, help="process name, e.g. eldenring.exe")
     live.add_argument("--seconds", type=int, default=24 * 3600)
     live.add_argument("--dry-run", action="store_true",
@@ -325,7 +350,7 @@ def build_parser() -> argparse.ArgumentParser:
     restore.set_defaults(func=cmd_restore)
 
     serve = sub.add_parser("serve", help="run the background service with a local HTTP API")
-    add_tool_args(serve)
+    add_hw_args(serve)
     serve.add_argument("--host", default="127.0.0.1", help="loopback addresses only")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--token-file", default=str(DEFAULT_TOKEN_PATH))

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from statistics import mean
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .model import Device, Goal, Sample, Settings
 
@@ -42,6 +42,7 @@ class Controller:
     BUDGET_SLACK = 1.03
     THERMAL_BAN_FACTOR = 4  # heat changes slowly, so don't retry a hot setting soon
     WATTS_PER_TDP_WATT = 0.9  # rough marginal APU draw when GPU-bound
+    MIN_LIVE_FPS = 1.0  # a second with fewer frames than this is a loading screen, not gameplay
 
     def __init__(
         self,
@@ -74,6 +75,7 @@ class Controller:
         self._ceiling_expires = 0
         self._blocked_tdp = set()  # values the hardware refused to apply
         self._blocked_res = set()
+        self._temp_known = True  # a temperature of 0 means the sensor could not be read
 
     @staticmethod
     def default_settings(goal: Goal, device: Device) -> Settings:
@@ -98,9 +100,12 @@ class Controller:
         self._samples.append(sample)
         if len(self._samples) < self.window:
             return None
-        stats = _summarise(self._samples)
+        stats, live = _summarise(self._samples, self.MIN_LIVE_FPS)
         self._samples = []
         self._windows += 1
+        if not live and stats.temp_c <= self.goal.max_temp_c:
+            # menus, loading screens or a wrong process name: do not mistake silence for a slow game
+            return Decision(self.settings, "waiting for frames from the game", False, stats)
         return self._decide(stats)
 
     def reject(self) -> None:
@@ -133,6 +138,7 @@ class Controller:
 
     def _decide(self, st: WindowStats) -> Decision:
         goal, cur = self.goal, self.settings
+        self._temp_known = st.temp_c > 0
         budget = self.power_budget_w(st.battery_wh)
         hot = st.temp_c > goal.max_temp_c
         meets = (
@@ -158,6 +164,8 @@ class Controller:
                 self._tdp(cur, +1),  # fps outranks the battery goal as a last resort
             )
             if cand is None:
+                if not self._temp_known:
+                    return self._hold("temperature unreadable, not raising power", st)
                 return self._hold(f"target unreachable at {st.fps_avg:.0f}fps, best effort", st)
             if cand.tdp_w > cur.tdp_w:
                 return self._move(cand, "perf", f"{st.fps_avg:.0f}fps below target, raising power", st)
@@ -203,6 +211,8 @@ class Controller:
         tdp = s.tdp_w + direction * self.device.tdp_step_w
         if not self.device.tdp_min_w <= tdp <= self.device.tdp_max_w or tdp in self._blocked_tdp:
             return None
+        if direction > 0 and not self._temp_known:
+            return None  # never add heat while blind to it
         if direction > 0 and self._tdp_ceiling is not None and self._windows < self._ceiling_expires:
             if tdp > self._tdp_ceiling:
                 return None
@@ -242,12 +252,21 @@ class Controller:
         return Decision(self.settings, reason, False, st)
 
 
-def _summarise(samples: List[Sample]) -> WindowStats:
+def _summarise(samples: List[Sample], min_live_fps: float) -> Tuple[WindowStats, bool]:
+    """Stats for one window, and whether enough of it was real gameplay to act on.
+
+    Seconds without frames are left out of the fps, power and headroom averages, so a short
+    menu or loading screen cannot drag a healthy window below target. Temperature is the
+    maximum over every second, because heat does not pause when the game does.
+    """
+    live = [s for s in samples if s.fps_avg >= min_live_fps]
+    enough = len(live) * 2 >= len(samples)
+    basis = live if enough else samples
     return WindowStats(
-        fps_avg=mean(s.fps_avg for s in samples),
-        fps_low=mean(s.fps_low for s in samples),
-        gpu_util=mean(s.gpu_util for s in samples),
-        power_w=mean(s.apu_power_w for s in samples),
+        fps_avg=mean(s.fps_avg for s in live) if enough else 0.0,
+        fps_low=mean(s.fps_low for s in live) if enough else 0.0,
+        gpu_util=mean(s.gpu_util for s in basis),
+        power_w=mean(s.apu_power_w for s in basis),
         temp_c=max(s.temp_c for s in samples),
         battery_wh=samples[-1].battery_wh,
-    )
+    ), enough

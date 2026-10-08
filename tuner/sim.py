@@ -28,11 +28,15 @@ class SimGame:
         battery_wh: float = None,
         reject_res: Sequence[int] = (),  # resolution indexes the "hardware" refuses
         max_tdp: int = None,  # highest TDP the "hardware" accepts
+        blackouts: Sequence[Tuple[int, int]] = (),  # (start s, end s) with no frames, like a loading screen
+        hide_temp: bool = False,  # temperature sensor reads 0, as if unreadable
     ) -> None:
         self.device = device
         self.settings = settings
         self.reject_res = set(reject_res)
         self.max_tdp = max_tdp
+        self.blackouts = list(blackouts)
+        self.hide_temp = hide_temp
         self.scenes = list(scenes)
         self.rng = random.Random(seed)
         self.battery_wh = device.battery_wh if battery_wh is None else battery_wh
@@ -67,6 +71,8 @@ class SimGame:
         capable = self.capable_fps() * (1 + self.rng.uniform(-0.03, 0.03))
         fps = min(capable, float(s.fps_cap))
         util = fps / capable
+        if any(start <= self.t < end for start, end in self.blackouts):
+            fps, util = 0.0, 0.0
         power = self.IDLE_W + (s.tdp_w - self.IDLE_W) * util
         power *= 1 + self.rng.uniform(-0.02, 0.02)
 
@@ -80,7 +86,7 @@ class SimGame:
             fps_low=fps * jitter,
             gpu_util=util,
             apu_power_w=power,
-            temp_c=self.temp_c,
+            temp_c=0.0 if self.hide_temp else self.temp_c,
             battery_wh=self.battery_wh,
         )
 
