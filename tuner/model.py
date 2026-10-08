@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -17,6 +18,18 @@ class Device:
     def pixels(self, res_index: int) -> int:
         w, h = self.resolutions[res_index]
         return w * h
+
+    def resolution_index(self, width: int, height: int) -> Optional[int]:
+        try:
+            return self.resolutions.index((width, height))
+        except ValueError:
+            return None
+
+    def snap_tdp(self, watts: float) -> int:
+        """Nearest TDP on this device's grid, clamped to its limits. Ties go to the lower value."""
+        steps = math.floor((watts - self.tdp_min_w) / self.tdp_step_w + 0.5 - 1e-9)
+        steps = max(0, min(steps, (self.tdp_max_w - self.tdp_min_w) // self.tdp_step_w))
+        return self.tdp_min_w + steps * self.tdp_step_w
 
 
 LEGION_GO = Device(

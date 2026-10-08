@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 from typing import Sequence, Tuple
 
 from .model import Device, Sample, Settings
@@ -24,17 +25,27 @@ class SimGame:
         scenes: Sequence[Tuple[int, float]] = ((120, 1.0), (90, 1.45), (120, 0.8)),
         seed: int = 1,
         battery_wh: float = None,
+        reject_res: Sequence[int] = (),  # resolution indexes the "hardware" refuses
+        max_tdp: int = None,  # highest TDP the "hardware" accepts
     ) -> None:
         self.device = device
         self.settings = settings
+        self.reject_res = set(reject_res)
+        self.max_tdp = max_tdp
         self.scenes = list(scenes)
         self.rng = random.Random(seed)
         self.battery_wh = device.battery_wh if battery_wh is None else battery_wh
         self.temp_c = 40.0
         self.t = 0
 
-    def apply(self, settings: Settings) -> None:
-        self.settings = settings
+    def apply(self, settings: Settings) -> Settings:
+        actual = settings
+        if settings.res_index in self.reject_res:
+            actual = replace(actual, res_index=self.settings.res_index)
+        if self.max_tdp is not None and settings.tdp_w > self.max_tdp:
+            actual = replace(actual, tdp_w=self.settings.tdp_w)
+        self.settings = actual
+        return actual
 
     def scene_weight(self) -> float:
         elapsed = self.t

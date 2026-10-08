@@ -72,12 +72,12 @@ class Controller:
         self._last_kind: Optional[str] = None  # "probe", "thermal", "perf" or None
         self._tdp_ceiling: Optional[int] = None  # set when hot; heat tracks TDP, not resolution
         self._ceiling_expires = 0
+        self._blocked_tdp = set()  # values the hardware refused to apply
+        self._blocked_res = set()
 
     @staticmethod
     def default_settings(goal: Goal, device: Device) -> Settings:
-        steps = round((15 - device.tdp_min_w) / device.tdp_step_w)  # stay on the device's TDP grid
-        tdp = device.tdp_min_w + max(steps, 0) * device.tdp_step_w
-        tdp = min(tdp, device.tdp_max_w)
+        tdp = device.snap_tdp(15)
         res = min(2, len(device.resolutions) - 1)
         return Settings(tdp, res, goal.target_fps)
 
@@ -102,6 +102,32 @@ class Controller:
         self._samples = []
         self._windows += 1
         return self._decide(stats)
+
+    def reject(self) -> None:
+        """Undo the move from the last Decision, e.g. in dry-run where nothing is applied."""
+        if self._prev is not None:
+            self.settings = self._prev
+        self._prev = None
+        self._last_kind = None
+        self._settle_left = 0
+        self._stable = 0
+
+    def report_failure(self, requested: Settings, actual: Settings) -> None:
+        """The backend could not apply `requested` and is really at `actual`.
+
+        Each dimension that did not take effect is blocked for the rest of the session,
+        so the controller works around it instead of asking again.
+        """
+        if requested.res_index != actual.res_index:
+            self._blocked_res.add(requested.res_index)
+        if requested.tdp_w != actual.tdp_w:
+            self._blocked_tdp.add(requested.tdp_w)
+        self.settings = replace(actual, fps_cap=self.goal.target_fps)
+        self._prev = None
+        self._last_kind = None
+        self._samples = []
+        self._settle_left = self.settle
+        self._stable = 0
 
     # -- decision logic -------------------------------------------------
 
@@ -175,7 +201,7 @@ class Controller:
 
     def _tdp(self, s: Settings, direction: int) -> Optional[Settings]:
         tdp = s.tdp_w + direction * self.device.tdp_step_w
-        if not self.device.tdp_min_w <= tdp <= self.device.tdp_max_w:
+        if not self.device.tdp_min_w <= tdp <= self.device.tdp_max_w or tdp in self._blocked_tdp:
             return None
         if direction > 0 and self._tdp_ceiling is not None and self._windows < self._ceiling_expires:
             if tdp > self._tdp_ceiling:
@@ -184,7 +210,7 @@ class Controller:
 
     def _res(self, s: Settings, direction: int) -> Optional[Settings]:
         idx = s.res_index + direction
-        if not 0 <= idx < len(self.device.resolutions):
+        if not 0 <= idx < len(self.device.resolutions) or idx in self._blocked_res:
             return None
         return replace(s, res_index=idx)
 

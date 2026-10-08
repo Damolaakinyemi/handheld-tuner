@@ -15,14 +15,32 @@ python3 -m unittest discover -s tests -t .
 ## Run it on the Legion Go (Windows 11, elevated prompt)
 
 Needs [PresentMon](https://github.com/GameTechDev/PresentMon) (2.x console build) and
-[RyzenAdj](https://github.com/FlyGoat/RyzenAdj) on disk.
+[RyzenAdj](https://github.com/FlyGoat/RyzenAdj) on disk. Go in this order:
+
+**1. Hardware check.** Finds out what works before the tuner relies on it, and saves a report to send back.
 
 ```
-python -m tuner run --game eldenring.exe --fps 60 --hours 2.5 --presentmon C:\tools\PresentMon.exe --ryzenadj C:\tools\ryzenadj.exe
+python -m tuner check --presentmon C:\tools\PresentMon.exe --ryzenadj C:\tools\ryzenadj.exe --game eldenring.exe
+python -m tuner check ... --test-write     # also re-applies the current TDP and flips resolution for 3 s
 ```
+
+**2. Dry run.** Reads telemetry and logs what the tuner *would* do, changing nothing. Play 10 minutes, then
+keep the CSV (default `~/.handheld-tuner/logs/`). This is the data needed to calibrate against real games.
+
+```
+python -m tuner run --dry-run --game eldenring.exe --fps 60 --hours 2.5 --presentmon ... --ryzenadj ...
+```
+
+**3. Live.** Same command without `--dry-run`.
+
+**Safety.** Every TDP and resolution change is verified by reading it back. If one is refused, the tuner stops
+asking for it and works around it. The original TDP limits and resolution are saved on start and restored on
+exit, on Ctrl+C, and when the console window is closed. If the machine dies mid-run, `python -m tuner restore`
+puts them back (TDP also resets on sleep or reboot, and the resolution change is never written to the registry).
 
 **The Windows backend ([tuner/windows.py](tuner/windows.py)) has never run on real hardware.** It was written
-against the PresentMon and RyzenAdj docs, and only its parsing is unit-tested. Expect to fix things on first run.
+against the PresentMon and RyzenAdj docs, and only its parsing and decision logic are unit-tested.
+Expect to fix things on first run.
 
 ## How the controller decides
 
