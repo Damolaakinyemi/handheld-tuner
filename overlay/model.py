@@ -78,6 +78,7 @@ class OverlayModel:
         self.sample: Optional[dict] = None
         self.decision_text = ""
         self.unreachable = False
+        self.condition: Optional[str] = None  # a lasting problem, shown until a later decision clears it
         self.spark: Deque[float] = deque(maxlen=SPARK_POINTS)
         self._toast: Optional[Tuple[str, float]] = None
         self._tdp: Optional[int] = None
@@ -120,6 +121,7 @@ class OverlayModel:
             self._tdp = self._res = None
             self.decision_text = ""
             self.unreachable = False
+            self.condition = None
             self._toast = None
         elif self.state == "error":
             self._toast = (self.error or "Tuner stopped", now)
@@ -139,6 +141,8 @@ class OverlayModel:
         reason = e.get("reason", "")
         text = friendly(reason)
         self.unreachable = "unreachable" in reason
+        lasting = "unreachable" in reason or "temperature unreadable" in reason
+        self.condition = text if lasting else None
         if e.get("changed"):
             self.decision_text = text
             prefix = "" if e.get("applied") else "Would: "
@@ -159,6 +163,7 @@ class OverlayModel:
 
     def view(self, now: float) -> View:
         toast = self._toast[0] if self._toast and now - self._toast[1] < TOAST_SECONDS else None
+        toast = toast or self.condition
 
         if not self.online:
             text = "Tuner offline"
@@ -173,6 +178,8 @@ class OverlayModel:
         paused = self.state == "paused"
         if s is None:
             tone, headline = "muted", "Starting…"
+        elif s["fps"] < 1 and not paused:
+            tone, headline = "muted", "Waiting for the game…"  # menus, loading screens, or a wrong exe name
         else:
             on_target = s["fps"] >= goal_fps * 0.97 and not self.unreachable
             tone = "muted" if paused else ("ok" if on_target else "warn")

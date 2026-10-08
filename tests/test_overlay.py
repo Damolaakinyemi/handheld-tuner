@@ -86,6 +86,40 @@ class ViewTests(unittest.TestCase):
         self.assertEqual(len(m.spark), 0)
 
 
+class LastingConditionTests(unittest.TestCase):
+    def test_loading_screen_says_so_instead_of_showing_zero_fps(self):
+        m = model(state(), sample(fps=0, power=3.2), decision("waiting for frames from the game", changed=False))
+        v = m.view(0)
+        self.assertEqual((v.headline, v.tone), ("Waiting for the game…", "muted"))
+        m.apply(sample(fps=60), 1)
+        self.assertEqual(m.view(1).headline, "60 fps · 8.0 W")
+
+    def test_unreadable_temperature_stays_visible_until_resolved(self):
+        m = model(state(), sample(fps=44), decision("temperature unreadable, not raising power", changed=False))
+        self.assertEqual(m.view(0).toast, "Can't read the temperature. Keeping power steady")
+        self.assertEqual(m.view(60).toast, "Can't read the temperature. Keeping power steady", "not a 2.5 s toast")
+        m.apply(decision("on target", changed=False), 61)
+        self.assertIsNone(m.view(61).toast)
+
+    def test_unreachable_target_stays_visible_and_a_change_clears_it(self):
+        m = model(state(), sample(fps=44), decision("target unreachable at 44fps, best effort", changed=False))
+        self.assertEqual(m.view(30).toast, "Can't reach the target. Doing its best")
+        m.apply(decision("52fps below target, lowering resolution"), 31)
+        self.assertEqual(m.view(31).toast, "Below target. Lowering resolution")
+        self.assertIsNone(m.view(31 + TOAST_SECONDS + 1).toast)
+
+    def test_a_new_toast_wins_over_a_lasting_condition(self):
+        m = model(state(), sample(), decision("temperature unreadable, not raising power", changed=False))
+        m.apply({"type": "note", "message": "saved profile for demo.exe"}, 5)
+        self.assertEqual(m.view(5).toast, "Saved your settings for this game")
+        self.assertEqual(m.view(5 + TOAST_SECONDS + 0.1).toast, "Can't read the temperature. Keeping power steady")
+
+    def test_going_idle_clears_the_condition(self):
+        m = model(state(), sample(), decision("temperature unreadable, not raising power", changed=False))
+        m.apply(state("idle"), 1)
+        self.assertIsNone(m.view(1).toast)
+
+
 class ToastTests(unittest.TestCase):
     def test_applied_change_toasts_then_expires(self):
         m = model(state(), sample(), decision("52fps below target, lowering resolution"))
